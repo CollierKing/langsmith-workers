@@ -93,24 +93,24 @@ export class TaskManagerAgent extends Agent<
     ];
 
     // MARK: - LS - Create run
-    const runId = uuidv4();
-    await client.createRun({
-      name: "create-run-test",
-      inputs: { modelName, messages, useTools: false },
-      project_name: LANGSMITH_PROJECT,
-      run_type: "chain",
-    });
+    // const runId = uuidv4();
+    // await client.createRun({
+    //   name: "create-run-test",
+    //   inputs: { modelName, messages, useTools: false },
+    //   project_name: LANGSMITH_PROJECT,
+    //   run_type: "chain",
+    // });
 
     // MARK: - LS - Traceable
-    // const wrappedText = traceable(
-    //   async (query: string) => {
-    const { object: actionObject } = await generateObject({
-      model: aiModel,
-      schema: z.object({
-        action: z.string(),
-        message: z.string().optional(),
-      }),
-      prompt: `
+    const wrappedText = traceable(
+      async (query: string) => {
+        const { object: actionObject } = await generateObject({
+          model: aiModel,
+          schema: z.object({
+            action: z.string(),
+            message: z.string().optional(),
+          }),
+          prompt: `
 				You are an intelligent task manager. Based on the user's prompt, decide whether to:
 				  - "add" a new task,
 				  - "delete" an existing task,
@@ -135,31 +135,31 @@ export class TaskManagerAgent extends Agent<
 				- To do nothing:
 				  { "action": "none", "message": "[explanation]" }
 			  `,
-      experimental_telemetry: {
-        isEnabled: true,
+          experimental_telemetry: {
+            isEnabled: true,
+          },
+        });
+
+        return actionObject;
       },
-    });
+      {
+        name: "traceable-test",
+        client: client,
+        project_name: LANGSMITH_PROJECT,
+        tracingEnabled: true,
+      },
+    );
 
-    //     return actionObject;
-    //   },
-    //   {
-    //     name: "traceable-test",
-    //     client: client,
-    //     project_name: LANGSMITH_PROJECT,
-    //     tracingEnabled: true,
-    //   },
-    // );
-
-    // const actionObject = await wrappedText(query);
+    const actionObject = await wrappedText(query);
 
     // MARK: - LS - Update run
-    await client.updateRun(runId, {
-      outputs: { role: "ai", content: actionObject },
-      end_time: new Date().toISOString(),
-      run_type: "chain",
-    });
-
-    await client.awaitPendingTraceBatches();
+    // await client.updateRun(runId, {
+    //   outputs: { role: "ai", content: actionObject },
+    //   end_time: new Date().toISOString(),
+    //   run_type: "chain",
+    // });
+    //
+    // await client.awaitPendingTraceBatches();
 
     // If user wants to list tasks, return them immediately.
     if (actionObject.action === "list") {
