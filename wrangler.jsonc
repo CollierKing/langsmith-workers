@@ -15,13 +15,17 @@
 			{
 				"name": "TASK_MANAGER_AGENT",
 				"class_name": "TaskManagerAgent"
+			},
+			{
+				"name": "TASK_MANAGER_AGENT2",
+				"class_name": "TaskManagerAgent2"
 			}
 		]
 	},
 	"migrations": [
 		{
 			"tag": "v1",
-			"new_sqlite_classes": ["TaskManagerAgent"]
+			"new_sqlite_classes": ["TaskManagerAgent", "TaskManagerAgent2"]
 		}
 	]
 }

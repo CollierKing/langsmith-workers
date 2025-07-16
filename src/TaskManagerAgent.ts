@@ -5,47 +5,17 @@ import z from "zod";
 import { Client } from "langsmith";
 import { traceable } from "langsmith/traceable";
 import { v4 as uuidv4 } from "uuid";
+import {
+  Task,
+  Confirmation,
+  TaskManagerState,
+  WrappedTextResponse,
+  GetTitleResponse,
+  GetTaskIdResponse,
+  Creds,
+} from "./ts/types";
 
 const LANGSMITH_PROJECT = "cloudflare-agents";
-
-// MARK: - TS
-/**
- * Represents a single task within the system.
- */
-interface Task {
-  id: string;
-  title: string;
-  description?: string;
-  completed: boolean;
-  createdAt: number;
-}
-
-/**
- * Represents a confirmation object that waits for human approval
- * before the requested action is actually taken.
- */
-interface Confirmation {
-  id: string;
-  action: "add" | "delete";
-  /** Only used for "add" actions. */
-  title?: string;
-  description?: string;
-  /** Only used for "delete" actions. */
-  taskId?: string;
-}
-
-/**
- * Represents the agent's state, including tasks and pending confirmations.
- */
-interface TaskManagerState {
-  tasks: Task[];
-  confirmations: Confirmation[];
-}
-
-type Creds = {
-  LANGSMITH_ENDPOINT2: string;
-  LANGSMITH_API_KEY2: string;
-};
 
 export class TaskManagerAgent extends Agent<
   { AI: Ai } & Creds,
@@ -75,8 +45,6 @@ export class TaskManagerAgent extends Agent<
     const client = new Client({
       apiUrl: this.env.LANGSMITH_ENDPOINT2,
       apiKey: this.env.LANGSMITH_API_KEY2,
-      // fetch: fetch.bind(globalThis),
-      verbose: true,
     });
 
     console.log(client);
@@ -92,18 +60,9 @@ export class TaskManagerAgent extends Agent<
       { role: "user", content: query },
     ];
 
-    // MARK: - LS - Create run
-    // const runId = uuidv4();
-    // await client.createRun({
-    //   name: "create-run-test",
-    //   inputs: { modelName, messages, useTools: false },
-    //   project_name: LANGSMITH_PROJECT,
-    //   run_type: "chain",
-    // });
-
     // MARK: - LS - Traceable
     const wrappedText = traceable(
-      async (query: string) => {
+      async (query: string): Promise<WrappedTextResponse> => {
         const { object: actionObject } = await generateObject({
           model: aiModel,
           schema: z.object({
@@ -140,25 +99,36 @@ export class TaskManagerAgent extends Agent<
           },
         });
 
-        return actionObject;
+        return {
+          messages: [
+            {
+              role: "assistant",
+              content: JSON.stringify(actionObject),
+              tool_calls: [
+                {
+                  id: uuidv4(),
+                  type: "function",
+                  function: {
+                    name: "get_task_action",
+                    arguments: query,
+                  },
+                },
+              ],
+            },
+          ],
+        };
       },
       {
         name: "traceable-test",
         client: client,
         project_name: LANGSMITH_PROJECT,
         tracingEnabled: true,
+        run_type: "llm",
       },
     );
 
-    const actionObject = await wrappedText(query);
-
-    // MARK: - LS - Update run
-    // await client.updateRun(runId, {
-    //   outputs: { role: "ai", content: actionObject },
-    //   end_time: new Date().toISOString(),
-    //   run_type: "chain",
-    // });
-    //
+    const wrappedTextResponse = await wrappedText(query);
+    const actionObject = JSON.parse(wrappedTextResponse.messages[0].content);
     // await client.awaitPendingTraceBatches();
 
     // If user wants to list tasks, return them immediately.
@@ -173,24 +143,37 @@ export class TaskManagerAgent extends Agent<
 
     // If user wants to add a task, figure out what the task title should be.
     if (actionObject.action === "add") {
-      const { object: addObject } = await generateObject({
-        model: aiModel,
-        schema: z.object({
-          title: z.string().optional(),
-        }),
-        prompt: `
-          You are an intelligent task manager. Extract a title from the user's prompt.
+      const getTaskTitleTraceable = traceable(
+        async (query: string): Promise<GetTitleResponse> => {
+          const { object: addObject } = await generateObject({
+            model: aiModel,
+            schema: z.object({
+              title: z.string().optional(),
+            }),
+            prompt: `
+              You are an intelligent task manager. Extract a title from the user's prompt.
 
-          Prompt: "${query}"
+              Prompt: "${query}"
 
-          Respond with a JSON object:
+              Respond with a JSON object:
 
-            - If you can extract a title:
-              { "title": "[title]" }
-            - If not:
-              { "title": undefined }
-        `,
-      });
+                - If you can extract a title:
+                  { "title": "[title]" }
+                - If not:
+                  { "title": undefined }
+            `,
+          });
+          return addObject;
+        },
+        {
+          name: "traceable-test",
+          client: client,
+          project_name: LANGSMITH_PROJECT,
+          run_type: "llm",
+        },
+      );
+
+      const addObject = await getTaskTitleTraceable(query);
 
       if (!addObject.title) {
         return {
@@ -216,26 +199,39 @@ export class TaskManagerAgent extends Agent<
 
     // If user wants to delete a task, figure out which task ID to delete.
     if (actionObject.action === "delete") {
-      const { object: deleteObject } = await generateObject({
-        model: aiModel,
-        schema: z.object({
-          taskId: z.string().optional(),
-        }),
-        prompt: `
-          You are an intelligent task manager. The user requested deleting a task.
-          Try to figure out which task ID from the list below is the best match.
+      const getTaskIdTraceable = traceable(
+        async (query: string): Promise<GetTaskIdResponse> => {
+          const { object: deleteObject } = await generateObject({
+            model: aiModel,
+            schema: z.object({
+              taskId: z.string().optional(),
+            }),
+            prompt: `
+              You are an intelligent task manager. The user requested deleting a task.
+              Try to figure out which task ID from the list below is the best match.
 
-          Prompt: "${query}"
+              Prompt: "${query}"
 
-          Current tasks: ${JSON.stringify(this.listTasks())}
+              Current tasks: ${JSON.stringify(this.listTasks())}
 
-          Respond with a JSON object of the form:
-            { "taskId": "[id]" }
-          if you find a match, or
-            { "taskId": undefined }
-          if there is no match.
-        `,
-      });
+              Respond with a JSON object of the form:
+                { "taskId": "[id]" }
+              if you find a match, or
+                { "taskId": undefined }
+              if there is no match.
+            `,
+          });
+          return deleteObject;
+        },
+        {
+          name: "traceable-test",
+          client: client,
+          project_name: LANGSMITH_PROJECT,
+          run_type: "llm",
+        },
+      );
+
+      const deleteObject = await getTaskIdTraceable(query);
 
       if (!deleteObject.taskId) {
         return {
